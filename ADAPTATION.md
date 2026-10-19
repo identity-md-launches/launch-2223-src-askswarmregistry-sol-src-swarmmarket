@@ -26,8 +26,8 @@ external call and creates no contract, so each can run on the launch's empty reh
 contract has an owner, admin, initializer, proxy, upgrade path, DELEGATECALL, CALLCODE, SELFDESTRUCT,
 ETH handling, minting, pausing, freezing or blacklisting; `$owner` is therefore not an argument of
 any of them. There is no launch token: this is a contracts-only launch and none was added. Runtime
-sizes are well under EIP-170 (`forge build --sizes`: registry 10,226 bytes, market 8,953 bytes,
-wager 7,387 bytes). No
+sizes are well under EIP-170 (`forge build --sizes`: registry 10,226 bytes, market 9,524 bytes,
+wager 8,059 bytes). No
 library is linked. `foundry.toml` already has `bytecode_hash = "none"`; no build configuration,
 dependency or protected path was touched. No `launch.json` was written: the manifest step writes it.
 
@@ -73,9 +73,71 @@ The supplied proof also passes against the fixed contract (it is a scratch file 
 The existing market invariant suite opens markets with `closeAt = resolveAfter <= now + 6 hours`, so
 its model needed no change.
 
-### 2. `src/AskSwarmRegistry.sol` and `src/SwarmWager.sol`: unchanged
+### 2. `src/SwarmMarket.sol` and `src/SwarmWager.sol`: a blocked third party cannot freeze others' funds (review findings ad6653d75214 and d4e9fc2df017, medium)
 
-Reviewed for the chain move and left as they are:
+**Reproduced.** Robinhood Chain's IMD, unlike the Ethereum token the earlier audits saw, is an
+owner-controlled OFT whose `setBlocked(address,bool)` makes any transfer to or from that address
+revert. Both supplied proofs (copied unchanged into `test/scratch/`) failed on the tree as it was:
+in SwarmMarket, `_void` (reached from `abandon`, a one-sided `resolve` and every voiding `settle`)
+pushed the escrow to the creator, and `settle` pushed the fee halves to the creator and the treasury,
+before any stake could be claimed. One blocked creator or a blocked treasury reverted the whole call,
+so nobody's stake could be claimed (`95e18 != 100e18`, "winner cannot be paid while the creator / treasury is
+blocked"). In SwarmWager, `_refund` and `abandon` pushed both stakes in one call, so a blocked party
+froze the other's refund (`97e18 != 100e18`).
+
+**Change.** Both contracts gain `mapping(address => uint256) public owed`, `withdraw()`, and events
+`Owed`/`Withdrawn` (SwarmWager also gains error `NothingOwed`; SwarmMarket reuses `NothingToClaim`).
+Every push to a third party now goes through `_pushOrCredit`: the transfer is tried and, **if the
+token reverts**, the amount is added to `owed[to]` and the call goes on. That covers SwarmMarket's
+creator remainder in `resolve`, both fee halves in `settle` and the escrow in `_void`, and
+SwarmWager's creator remainder in `resolve`, both legs of `_refund` and all three legs of `abandon`.
+A reply of `false`, or a malformed one, still reverts the whole call as before: it cannot show
+whether tokens moved, so crediting it could pay twice (the project's fault-injection token moves the
+balance and then returns `false`). A market `claim`, a wager's winner payout and `cancel` stay
+ordinary pushes, because each moves only the recipient's own money. `withdraw` is an ordinary push
+too, and a failed one reverts and keeps the credit. Conservation now reads: the contract's balance
+equals open stakes and escrows plus the sum of `owed` (plus rounding dust in markets). No fee, amount,
+recipient, phase rule or deadline changed.
+
+**Tests.**
+- `test/BlockedThirdParty.t.sol` (new, with `test/mocks/BlockableIMD.sol`, a blocklisting token):
+  a market abandons, and settles, with the creator blocked and separately with the treasury blocked;
+  it resolves with the creator blocked and credits the remainder. A wager refunds the counterparty on
+  timeout and on abandon with the other party blocked, and resolves with the creator blocked. Each
+  test checks the credit, that `withdraw` fails while blocked and succeeds after, and that the
+  contract ends empty.
+- `test/SwarmMarketPayments.t.sol`: three tests encoded the old rule that a failed third-party
+  push undoes the whole call. They are replaced, saying why, by
+  `test_refusedRemainderRefundIsCreditedAndAskStands`,
+  `test_malformedRemainderReplyRollsBackAlreadyPaidOracle` (a `false` reply still rolls back),
+  `testFuzz_treasuryFeeTransferFailure` (a revert is credited; false, short or non-boolean replies
+  roll back), `test_refusedAbandonRefundIsCreditedAndStakersClaim` and `test_failedWithdrawKeepsCredit`.
+- `test/SwarmWagerAtomicity.t.sol`: the all-legs fault matrix now expects a reverted refund or
+  remainder leg (resolve's remainder, abandon, a refused-answer refund) to succeed and be credited.
+  Each credited party withdraws, and the same final reconciliation of every balance runs. Every other
+  fault still has to roll the call back completely.
+- Both supplied proofs pass.
+
+### 3. `src/SwarmWager.sol`: `MAX_BODY_BYTES` at create (review finding 8510f4de65d9, low)
+
+**Reproduced.** `create` accepted a 16,385-byte body that Intake refuses (`BodyTooLong`). Such a
+wager could be joined but never resolved, so the counterparty waited for `abandon`. SwarmMarket already
+refuses such a body. **Change:** `uint256 public constant MAX_BODY_BYTES = 16_384` and `create`
+reverts `BadTerms` above it. `test_oversizedBodyRejectedByTransportLeavesFeeAndStakesRefundable` in
+`test/SwarmWagerBoundaries.t.sol` encoded the old lock, so it is replaced by
+`test_oversizedBodyRejectedAtCreate` (16,385 refused with nothing pulled, 16,384 accepted).
+
+### 4. `src/SwarmWager.sol`: `cancel` and `abandon` zero `fee` (review finding 9bcb33ce3798, info)
+
+**Reproduced.** After returning the escrow, `wagers(id).fee` still read 0.5 IMD. **Change:** both now
+zero it before paying, as `resolve` already did. Tested in
+`test_wagerFeeFieldZeroedOnCancelAndAbandon` and `test_wagerAbandonRefundsCounterpartyWhileOtherBlocked`.
+The wager invariant handler's model (`test/helpers/SwarmWagerHandler.sol`) zeroes its fee at the
+same points.
+
+### 5. `src/AskSwarmRegistry.sol`: unchanged
+
+Reviewed for the chain move and left as it is:
 
 - The registry caches its EIP-712 domain separator at construction from `block.chainid` and its own
   address, so deployed on 4663 it verifies attestations signed for `(4663, registry)`, which is what
@@ -138,6 +200,24 @@ unchanged.
 - `script/*.s.sol`: the project's own deploy scripts, kept as they are. IMD deploys this launch
   through its factory; the scripts are not part of it.
 
+## Review findings left for the requester (not changed)
+
+- **f5712afab2f2 (low), SwarmMarket's 1-hour `RESOLVE_WINDOW` on a sequencer chain.** The analysis
+  is right: if Robinhood Chain's sequencer produced no block during a market's window, the market
+  could then only be abandoned. But the brief states the window ("1h resolve window"), and resizing
+  it changes the market's economics. That is the requester's call, so it is left at one hour and
+  recorded here.
+- **bcc1e38a0539 (low), SwarmWager's `resolve` has no upper bound and overlaps `abandon`.** This is
+  the documented #2189 design ("the first of resolve or abandon wins", tested by the #2189 suite).
+  Closing the overlap needs a new window, which brings back the liveness trade-off above. Left for the
+  requester to decide.
+- **779c9c20e1b2 (low), SwarmWager has no `issuedAt` bound and no `MIN_PANEL`.** Both are documented
+  #2189 choices: the "race to settlement" NatSpec and its two ordering tests, and a panel both parties
+  see in the body. Mirroring SwarmMarket would change which answers pay out. Left as is.
+- **21899ff13b28 (info), rounding dust.** Winners' shares round down, so under one wei per winning
+  address per market stays in the contract. That is by design and harmless; it is now stated in
+  SwarmMarket's invariants NatSpec, and no sweep was added.
+
 ## Reviewed, not changed
 
 - `_call` in all three contracts treats a call to an address with no code as success. On Robinhood
@@ -159,10 +239,9 @@ FOUNDRY_FUZZ_SEED=0x2f3d7c16d2b603b56fb1770d932e136dd9bb2d188416439503efa76c1965
 ```
 
 `forge build` succeeds (the compiler's advisory lints about timestamps and casts are unchanged from
-the earlier rounds). `forge test` reports **221 passed, 0 failed, 1 skipped** across 23 suites; the
-skip is the pre-existing fork-only `SwarmMarketLiveRegistry` test, which skips itself when there is
-no fork. Before the change the same command reported 209 passed. The eleven delivered new tests are the five
-`MAX_TERM` regressions and the six Robinhood Chain rehearsal tests; the twelfth in the local count
-is the supplied proof in `test/scratch/`, which is not delivered.
+the earlier rounds). `forge test` reports **230 passed, 0 failed, 1 skipped** across the delivered
+suites, plus the six supplied proof tests in `test/scratch/`, which all pass (236 in the local run).
+The skip is the pre-existing fork-only `SwarmMarketLiveRegistry` test. Runtime sizes after this round:
+registry 10,226 bytes, market 9,524 bytes, wager 8,059 bytes.
 No tool other than Foundry was run; no transaction was signed or broadcast, no key or environment was
 read, and no network call was made by the tests.

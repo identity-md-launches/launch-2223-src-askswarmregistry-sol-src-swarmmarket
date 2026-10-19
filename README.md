@@ -31,9 +31,20 @@ The same three contracts ship on Robinhood Chain in one `evm_contracts` launch, 
 Intake v2 and the attester key are the same on both chains; only IMD's address differs. The registry
 derives its EIP-712 domain from `block.chainid` at construction, so answers there are signed for
 chain 4663 and that registry's address. Nothing uses `block.number`, so Arbitrum-style block numbers
-do not matter. The one behaviour change made for this launch: `SwarmMarket.open` now rejects a
-`resolveAfter` more than `MAX_TERM` (365 days, the same bound as SwarmWager) after the opening block,
-so every market can be resolved or abandoned within a bounded horizon. The launch rehearsal is
+do not matter. Behaviour changes made for this launch:
+
+- `SwarmMarket.open` rejects a `resolveAfter` more than `MAX_TERM` (365 days, the same bound as
+  SwarmWager) after the opening block, so every market can be resolved or abandoned within a
+  bounded horizon.
+- Robinhood Chain's IMD can block an address. In both contracts a payment to a third party
+  (creator's escrow, remainder and fee half, treasury's fee half, each side's wager refund) is
+  pushed as before, but if the token reverts it, the amount is credited to `owed(address)` and the
+  call goes on; that address calls `withdraw()` once the token lets it. Stakers' `claim` and a
+  wager winner's payout stay direct pushes: they only move the caller's or winner's own money.
+- `SwarmWager.create` rejects a body over `MAX_BODY_BYTES` (16,384, Intake's cap, as in
+  SwarmMarket), and `cancel`/`abandon` zero the wager's `fee` field once the escrow is returned.
+
+The launch rehearsal is
 `test/RobinhoodChainLaunch.t.sol`; `forge test` runs everything offline.
 
 Built by Chromia × EVAL Engine for the Identity MD hackathon, October 2026. Bot: [t.me/askswarm_bot](https://t.me/askswarm_bot).
