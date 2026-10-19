@@ -768,8 +768,8 @@ contract RobinhoodSystemInvariantTest is Test {
             if (t == 0) continue;
             (SwarmWager.Wager memory w,) = wager.get(id);
             assertEq(uint8(w.state), t, "a finished wager never reopens");
-            // `cancel` and `abandon` leave `w.fee` at its old value although it was paid back
-            // (reported as info): the money check is the balance equality above, not this field.
+            // `cancel`, `abandon` and `resolve` all zero the fee escrow once it is paid out.
+            assertEq(w.fee, 0, "a finished wager keeps no fee escrow");
         }
     }
 
