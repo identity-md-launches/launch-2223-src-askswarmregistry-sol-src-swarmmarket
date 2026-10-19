@@ -17,6 +17,25 @@ AskSwarm turns the [IMD](https://imd.fun) oracle into something people and contr
 | SwarmMarket | [`0x4964d5f0…8afa55`](https://etherscan.io/address/0x4964d5f08c71e71d490a9b8a30ed796fc38afa55) | [#2190](https://explorer.imd.fun/launches/01cfb128-811e-4584-8035-85249f0a4884) |
 | SwarmWager | [`0xc0b13031…99bbe6`](https://etherscan.io/address/0xc0b130319ad1e9bb059bc8aab147ca064399bbe6) | [#2189](https://explorer.imd.fun/launches/9781dc7e-23dc-4f1c-93f8-4766c016cac7) |
 
+### Robinhood Chain (chain id 4663)
+
+The same three contracts ship on Robinhood Chain in one `evm_contracts` launch, in dependency order
+(brief: [contracts/LAUNCH-RH.md](contracts/LAUNCH-RH.md), notes: [ADAPTATION.md](ADAPTATION.md)):
+
+| order | contract | constructor |
+|---|---|---|
+| 1 | AskSwarmRegistry | `(intake, imd, signer)` = Intake v2 `0xa43e6f75ee006411f79ac1c84120606c2330de82`, Robinhood IMD `0x5f7bb59365ce557c26dbcaa4ee9d39a4b95b7127`, attester `0x5598aa9146215bc13eb26f2c692ad1461fd32982` |
+| 2 | SwarmMarket | `(registry, imd, treasury)` = the registry above, Robinhood IMD, treasury `0x571e17b13d8f6492bbc372a160520b20bfda320c` |
+| 3 | SwarmWager | `(registry, imd)` = the registry above, Robinhood IMD |
+
+Intake v2 and the attester key are the same on both chains; only IMD's address differs. The registry
+derives its EIP-712 domain from `block.chainid` at construction, so answers there are signed for
+chain 4663 and that registry's address. Nothing uses `block.number`, so Arbitrum-style block numbers
+do not matter. The one behaviour change made for this launch: `SwarmMarket.open` now rejects a
+`resolveAfter` more than `MAX_TERM` (365 days, the same bound as SwarmWager) after the opening block,
+so every market can be resolved or abandoned within a bounded horizon. The launch rehearsal is
+`test/RobinhoodChainLaunch.t.sol`; `forge test` runs everything offline.
+
 Built by Chromia × EVAL Engine for the Identity MD hackathon, October 2026. Bot: [t.me/askswarm_bot](https://t.me/askswarm_bot).
 
 **Demo (48 s):** [docs/askswarm-demo.mp4](docs/askswarm-demo.mp4)

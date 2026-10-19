@@ -21,7 +21,8 @@ import {IAskSwarmRegistry} from "./SwarmWager.sol";
 /// - Paid out per market never exceeds staked: winners' claims plus fees sum to at most the pool.
 /// - Each address claims at most once per market. Claims are pulled; there are no loops.
 /// - A market can always be unwound: void if one side is empty, void if the swarm never answers,
-///   `abandon` if it can never be resolved.
+///   `abandon` if it can never be resolved. `resolveAfter` is at most MAX_TERM from opening, so
+///   that moment always comes.
 /// - The fee escrow pays the swarm at most once, through `resolve`; unspent fee returns to the creator.
 /// - No owner, no admin, no upgrade path, no ETH. Constructor makes no external call.
 contract SwarmMarket {
@@ -52,6 +53,13 @@ contract SwarmMarket {
     /// @notice Time allowed for the swarm's answer after asking, inclusive. A market still pending
     /// after it, or answered with a later issuedAt, voids.
     uint64 public constant ANSWER_WINDOW = 3 days;
+    /// @notice Latest permitted `resolveAfter`, measured from the opening block's timestamp,
+    /// inclusive. Also bounds `closeAt`, since `closeAt <= resolveAfter`. Without it a creator could
+    /// open a market whose `resolveAfter` no chain ever reaches, so neither `resolve` nor `abandon`
+    /// would ever be allowed and every stake would be held forever (audit finding f8ec801b0e44).
+    /// Same bound as SwarmWager.MAX_TERM: at the maximum, `abandon` opens strictly after
+    /// MAX_TERM + RESOLVE_WINDOW.
+    uint64 public constant MAX_TERM = 365 days;
     /// @notice Smallest panel allowed to decide a market; strict majority is also required.
     uint16 public constant MIN_PANEL = 7;
     /// @notice Fee on the losing pool, in basis points, taken only when the swarm settles the market.
@@ -98,8 +106,13 @@ contract SwarmMarket {
     // ---- lifecycle ----
 
     /// @notice Open a market. Pulls the registry's current price from the caller as the fee escrow.
+    /// Terms: `closeAt` in the future, `resolveAfter` at or after `closeAt` and at most MAX_TERM
+    /// from now, so the market can always be resolved or abandoned within a bounded horizon.
     function open(bytes calldata body, uint64 closeAt, uint64 resolveAfter) external returns (uint256 id) {
-        if (body.length == 0 || body.length > MAX_BODY_BYTES || closeAt <= block.timestamp || resolveAfter < closeAt) {
+        if (
+            body.length == 0 || body.length > MAX_BODY_BYTES || closeAt <= block.timestamp || resolveAfter < closeAt
+                || uint256(resolveAfter) > block.timestamp + MAX_TERM
+        ) {
             revert BadTerms();
         }
         uint256 p = REGISTRY.price();
