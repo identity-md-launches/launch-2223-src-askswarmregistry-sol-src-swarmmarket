@@ -81,3 +81,11 @@ Reported in `.imd-findings.json`, not asserted:
 - The callback's gas cost is above the brief's figure but still under the stipend (info).
 
 The live-fork run against Intake v2 and IMD on Ethereum is still owed for this pass. Everything here runs offline against the transport model.
+
+## Robinhood Chain launch: the three contracts as one system
+
+- `RobinhoodSystemInvariant.t.sol` deploys AskSwarmRegistry, SwarmMarket and SwarmWager in one call (CREATE2, registry first, chain 4663) and drives all three through one shared registry: 128 sequences of 80 calls from four actors over open/stake/top-up/resolve/abandon/settle/claim, create/join/cancel/top-up/resolve/abandon/settle, writer deliveries in eleven modes (yes, no, panel of 5, issued near the deadline, non-canonical bool, wrong answer type, wrong key, no strict majority, refused, no result, stranded then `markLost`), price changes, time jumps, and whole-lifecycle steps so decided markets appear in every run. Reverts fail the campaign; each expected revert is asserted with its error.
+- Each settlement is checked against the outcome computed from what was delivered (decided only by a verified canonical bool from a strict majority, panel >= 7 and issued by the deadline for the market; any verified strict-majority bool for the wager), including the 2% fee split creator/treasury and the parimutuel claim rule written from ghost stakes.
+- Invariants: each consumer holds exactly what it owes from ghost accounting (escrow + open stakes - fees - claims); claims never exceed what a market holds (dust < 1 wei per staker); finished markets and wagers never reopen; the registry keeps no IMD or allowance, the consumers leave no allowance; one Intake payment per resolve; token supply conserved.
+- Reported in `.imd-findings.json` (info): SwarmWager leaves `fee` set after cancel/abandon; SwarmWager does not apply SwarmMarket's MIN_PANEL or issuedAt deadline; SwarmMarket's rounding dust is unrecoverable.
+- Still owed: a fork run against Intake v2 and IMD on Robinhood Chain (no RPC here).
